@@ -65,6 +65,19 @@ type VideoSource =
   | { kind: 'direct'; url: string }
   | { kind: 'embed'; url: string };
 
+type MediaMetadata = {
+  sessionId: string;
+  sourceKind: SourceKind;
+  sourceId: string;
+  providerName: string | null;
+  title: string | null;
+  authorName: string | null;
+  publishedAt: string | null;
+  viewCount: string | null;
+  status: 'loading' | 'partial' | 'unavailable';
+  missingFields: string[];
+};
+
 type PlaybackSnapshot = {
   sourceUrl: string | null;
   sourceKind: SourceKind | null;
@@ -178,6 +191,10 @@ function finiteTime(value: number) {
   return Number.isFinite(value) && value >= 0 ? Math.round(value * 10) / 10 : null;
 }
 
+function finiteDelta(value: number) {
+  return Number.isFinite(value) ? Math.round(value * 10) / 10 : null;
+}
+
 function formatTimecode(value: number | null) {
   if (value === null || !Number.isFinite(value) || value < 0) return null;
 
@@ -202,6 +219,56 @@ function publicPlaybackState(snapshot: PlaybackSnapshot) {
     timecode: formatTimecode(currentTime),
     duration,
     durationTimecode: formatTimecode(duration),
+  };
+}
+
+function readablePathSegment(value: string | undefined) {
+  if (!value) return null;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function initialMediaMetadata(source: VideoSource, sessionId: string): MediaMetadata {
+  if (source.kind === 'youtube') {
+    return {
+      sessionId,
+      sourceKind: source.kind,
+      sourceId: source.videoId,
+      providerName: 'YouTube',
+      title: null,
+      authorName: null,
+      publishedAt: null,
+      viewCount: null,
+      status: 'loading',
+      missingFields: ['title', 'authorName', 'publishedAt', 'viewCount'],
+    };
+  }
+
+  const url = new URL(source.url);
+  const directTitle =
+    source.kind === 'direct'
+      ? readablePathSegment(url.pathname.split('/').filter(Boolean).at(-1))
+      : null;
+
+  return {
+    sessionId,
+    sourceKind: source.kind,
+    sourceId: source.url,
+    providerName: url.hostname || null,
+    title: directTitle,
+    authorName: null,
+    publishedAt: null,
+    viewCount: null,
+    status: source.kind === 'direct' ? 'partial' : 'unavailable',
+    missingFields: [
+      ...(directTitle ? [] : ['title']),
+      'authorName',
+      'publishedAt',
+      'viewCount',
+    ],
   };
 }
 
@@ -523,13 +590,16 @@ export default function Home() {
   const [reactionMenuOpen, setReactionMenuOpen] = useState(false);
   const [viewerReactionCoolingDown, setViewerReactionCoolingDown] = useState(false);
   const [playback, setPlayback] = useState<PlaybackSnapshot>(EMPTY_PLAYBACK);
+  const [mediaMetadata, setMediaMetadata] = useState<MediaMetadata | null>(null);
   const [observationIntervalSeconds, setObservationIntervalSeconds] =
     useState<ObservationIntervalSeconds>(DEFAULT_OBSERVATION_INTERVAL_SECONDS);
   const playbackRef = useRef(playback);
+  const mediaMetadataRef = useRef(mediaMetadata);
   const observationIntervalRef = useRef(observationIntervalSeconds);
   const controllerRef = useRef<PlayerController | null>(null);
   const reactionSequenceRef = useRef(0);
   const signalSequenceRef = useRef(0);
+  const mediaSessionSequenceRef = useRef(0);
   const pendingSignalsRef = useRef<UserSignal[]>([]);
   const observationWaiterRef = useRef<ObservationWaiter | null>(null);
   const reactionMenuRef = useRef<HTMLDivElement>(null);
@@ -541,8 +611,60 @@ export default function Home() {
   }, [playback]);
 
   useEffect(() => {
+    mediaMetadataRef.current = mediaMetadata;
+  }, [mediaMetadata]);
+
+  useEffect(() => {
     observationIntervalRef.current = observationIntervalSeconds;
   }, [observationIntervalSeconds]);
+
+  useEffect(() => {
+    if (!source || source.kind !== 'youtube') return;
+
+    const sessionId = mediaMetadataRef.current?.sessionId;
+    let disposed = false;
+    void fetch(`/api/youtube-metadata?videoId=${encodeURIComponent(source.videoId)}`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error('YouTube metadata is unavailable.');
+        return (await response.json()) as {
+          title?: unknown;
+          authorName?: unknown;
+        };
+      })
+      .then((metadata) => {
+        if (disposed) return;
+        setMediaMetadata((current) => {
+          if (!current || current.sessionId !== sessionId) return current;
+          const title = typeof metadata.title === 'string' ? metadata.title : null;
+          const authorName =
+            typeof metadata.authorName === 'string' ? metadata.authorName : null;
+          return {
+            ...current,
+            title,
+            authorName,
+            status: title ? 'partial' : 'unavailable',
+            missingFields: [
+              ...(title ? [] : ['title']),
+              ...(authorName ? [] : ['authorName']),
+              'publishedAt',
+              'viewCount',
+            ],
+          };
+        });
+      })
+      .catch(() => {
+        if (disposed) return;
+        setMediaMetadata((current) =>
+          current?.sessionId === sessionId
+            ? { ...current, status: 'unavailable' }
+            : current,
+        );
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [source]);
 
   useEffect(() => {
     if (!reactionMenuOpen) return;
@@ -661,26 +783,44 @@ export default function Home() {
     [publishUserSignal, publishVisualReactions],
   );
 
-  const waitForObservationWake = useCallback((timeoutMs: number) => {
-    const queuedSignal = pendingSignalsRef.current.shift();
-    if (queuedSignal) {
-      return Promise.resolve<ObservationWake>({
-        reason: 'user_signal',
-        signal: queuedSignal,
+  const waitForObservationWake = useCallback(
+    (startPlaybackTime: number, intervalSeconds: number) => {
+      const queuedSignal = pendingSignalsRef.current.shift();
+      if (queuedSignal) {
+        return Promise.resolve<ObservationWake>({
+          reason: 'user_signal',
+          signal: queuedSignal,
+        });
+      }
+
+      return new Promise<ObservationWake>((resolve) => {
+        const targetPlaybackTime = startPlaybackTime + intervalSeconds;
+        const checkPlaybackTime = () => {
+          const waiter = observationWaiterRef.current;
+          if (!waiter) return;
+
+          const current = playbackRef.current;
+          if (
+            current.status !== 'playing' ||
+            current.currentTime === null ||
+            current.currentTime < startPlaybackTime - 1 ||
+            current.currentTime >= targetPlaybackTime
+          ) {
+            observationWaiterRef.current = null;
+            resolve({ reason: 'interval' });
+            return;
+          }
+
+          const nextTimerId = window.setTimeout(checkPlaybackTime, 100);
+          waiter.timerId = nextTimerId;
+        };
+
+        const timerId = window.setTimeout(checkPlaybackTime, 100);
+        observationWaiterRef.current = { timerId, resolve };
       });
-    }
-
-    return new Promise<ObservationWake>((resolve) => {
-      const timerId = window.setTimeout(() => {
-        if (observationWaiterRef.current?.timerId === timerId) {
-          observationWaiterRef.current = null;
-        }
-        resolve({ reason: 'interval' });
-      }, timeoutMs);
-
-      observationWaiterRef.current = { timerId, resolve };
-    });
-  }, []);
+    },
+    [],
+  );
 
   useEffect(() => {
     const modelContext = document.modelContext;
@@ -699,17 +839,21 @@ export default function Home() {
       {
         name: 'watch_get_session',
         description:
-          'Read the current shared-video state and viewing protocol. Call this before starting a watch-along. The user’s current request determines the interaction style; do not assume they want constant commentary.',
+          'Read the current shared-video state, session-level media metadata, and viewing protocol. Call this before starting a watch-along. The user’s current request determines the interaction style; do not assume they want constant commentary.',
         inputSchema: noInputSchema,
         annotations: { readOnlyHint: true },
         execute: async () => ({
           ok: true,
+          media: mediaMetadataRef.current,
           playback: publicPlaybackState(playbackRef.current),
           protocol: {
             ...WATCH_PROTOCOL,
             observationIntervalSeconds: observationIntervalRef.current,
+            observationIntervalBasis: 'video playback time',
             viewerReactionCooldownSeconds: VIEWER_REACTION_COOLDOWN_MS / 1_000,
             maxAgentReactionsPerCall: MAX_AGENT_REACTIONS,
+            mediaMetadata:
+              'watch_get_session returns session-level media identity once. Observations repeat only mediaSessionId and sourceId alongside timing fields.',
             liveSignals:
               'Any viewer emoji wakes watch_observe_next_moment immediately. Treat the returned emoji and visible frame as evidence; choose the response from the current conversation context.',
           },
@@ -718,7 +862,7 @@ export default function Home() {
       {
         name: 'watch_observe_next_moment',
         description:
-          'Continue an active watch-along. Wait until the user-selected observation interval elapses, or return immediately when the viewer sends any emoji signal. Call repeatedly only while the video is playing and the user wants you to watch. Inspect the visible frame and use any returned emoji as evidence; the current conversation determines how you respond.',
+          'Continue an active watch-along. Wait until the selected amount of video playback time elapses, or return immediately when the viewer sends any emoji signal. Call repeatedly only while the video is playing and the user wants you to watch. Inspect the visible frame and use any returned emoji as evidence; the current conversation determines how you respond.',
         inputSchema: noInputSchema,
         annotations: { readOnlyHint: true },
         execute: async () => {
@@ -751,7 +895,8 @@ export default function Home() {
 
           const observedSource = initial.sourceUrl;
           const intervalSeconds = observationIntervalRef.current;
-          const wake = await waitForObservationWake(intervalSeconds * 1_000);
+          const initialPlaybackTime = finiteTime(initial.currentTime);
+          const wake = await waitForObservationWake(initial.currentTime, intervalSeconds);
           const current = playbackRef.current;
 
           if (wake.reason === 'cancelled') {
@@ -777,14 +922,33 @@ export default function Home() {
             );
           }
 
+          const currentPlaybackTime = finiteTime(current.currentTime ?? Number.NaN);
+          const elapsedPlaybackSeconds =
+            initialPlaybackTime === null || currentPlaybackTime === null
+              ? null
+              : finiteDelta(currentPlaybackTime - initialPlaybackTime);
+          const seekDetected =
+            wake.reason === 'interval' &&
+            elapsedPlaybackSeconds !== null &&
+            (elapsedPlaybackSeconds < -1 || elapsedPlaybackSeconds > intervalSeconds + 2);
+          const observationId = `observation-${Date.now()}`;
+          const capturedAt = new Date().toISOString();
+
           return {
             ok: true,
             observation: {
-              id: `observation-${Date.now()}`,
-              capturedAt: new Date().toISOString(),
+              id: observationId,
+              capturedAt,
               wakeReason: wake.reason,
               signal: wake.reason === 'user_signal' ? wake.signal : null,
               observationIntervalSeconds: intervalSeconds,
+              observationIntervalBasis: 'video playback time',
+              previousPlaybackTime: initialPlaybackTime,
+              previousTimecode: formatTimecode(initialPlaybackTime),
+              elapsedPlaybackSeconds,
+              seekDetected,
+              mediaSessionId: mediaMetadataRef.current?.sessionId ?? null,
+              sourceId: mediaMetadataRef.current?.sourceId ?? null,
               playback: publicPlaybackState(current),
               visualInstruction:
                 'Inspect the currently visible video frame. Use the wake reason, optional user signal, and conversation context to decide whether to stay quiet, react, or respond.',
@@ -866,6 +1030,10 @@ export default function Home() {
           additionalProperties: false,
         },
         execute: async (input) => {
+          if (!playbackRef.current.sourceUrl) {
+            return webMcpError('NO_VIDEO', 'No video is open.', playbackRef.current);
+          }
+
           const emojis =
             typeof input === 'object' && input !== null && 'emojis' in input
               ? (input as { emojis?: unknown }).emojis
@@ -924,7 +1092,11 @@ export default function Home() {
     event.preventDefault();
     try {
       const parsedSource = parseVideoSource(videoUrl);
+      const sessionId = `media-${Date.now()}-${mediaSessionSequenceRef.current++}`;
+      const nextMetadata = initialMediaMetadata(parsedSource, sessionId);
       setSource(parsedSource);
+      setMediaMetadata(nextMetadata);
+      mediaMetadataRef.current = nextMetadata;
       setError('');
       setReactions([]);
       setReactionMenuOpen(false);
@@ -947,6 +1119,8 @@ export default function Home() {
     pendingSignalsRef.current = [];
     releaseObservation({ reason: 'cancelled' });
     setSource(null);
+    setMediaMetadata(null);
+    mediaMetadataRef.current = null;
     setPlayback(EMPTY_PLAYBACK);
     setReactions([]);
     setReactionMenuOpen(false);
