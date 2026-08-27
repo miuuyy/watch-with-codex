@@ -681,6 +681,8 @@ export default function Home() {
               playback: publicPlaybackState(current),
               visualInstruction:
                 'Inspect the currently visible video frame. Use the wake reason, optional user signal, and conversation context to decide whether to stay quiet, react, or respond.',
+              continuationInstruction:
+                'If you intend to keep watching after handling this checkpoint, call watch_observe_next_moment again immediately. Do not call it again if playback has stopped or the user no longer wants you to watch.',
             },
           };
         },
