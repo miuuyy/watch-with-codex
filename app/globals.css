@@ -1,0 +1,364 @@
+@import 'tailwindcss';
+
+@font-face {
+  font-family: 'OpenAI Sans';
+  src: url('/fonts/OpenAISans-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'OpenAI Sans';
+  src: url('/fonts/OpenAISans-Medium.woff2') format('woff2');
+  font-weight: 500 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --background: #181818;
+  --surface: #212121;
+  --surface-hover: #282828;
+  --text: #ffffff;
+  --text-secondary: rgba(255, 255, 255, 0.7);
+  --text-tertiary: rgba(255, 255, 255, 0.5);
+  --border: rgba(255, 255, 255, 0.14);
+  --border-strong: rgba(255, 255, 255, 0.24);
+  color: var(--text);
+  background: var(--background);
+  font-family: 'OpenAI Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+  margin: 0;
+  background: var(--background);
+}
+
+body {
+  color: var(--text);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+}
+
+.start-screen {
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  padding: 32px;
+}
+
+.start-content {
+  width: min(640px, 100%);
+  transform: translateY(-3vh);
+}
+
+.eyebrow {
+  margin: 0 0 18px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+h1 {
+  margin: 0;
+  color: var(--text);
+  font-size: clamp(34px, 6vw, 58px);
+  font-weight: 500;
+  letter-spacing: -0.042em;
+  line-height: 1.04;
+}
+
+.link-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 46px;
+  gap: 10px;
+  margin-top: 48px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-strong);
+  transition: border-color 150ms ease;
+}
+
+.link-form:focus-within {
+  border-color: rgba(255, 255, 255, 0.58);
+}
+
+.link-form input {
+  width: 100%;
+  padding: 8px 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 17px;
+}
+
+.link-form input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.link-form button {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: var(--text);
+  color: #0d0d0d;
+  cursor: pointer;
+  font-size: 22px;
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.link-form button:hover:not(:disabled) {
+  transform: translateX(2px);
+}
+
+.link-form button:disabled {
+  cursor: default;
+  opacity: 0.22;
+}
+
+.input-message {
+  min-height: 18px;
+  margin: 14px 0 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.input-error {
+  color: #ff6764;
+}
+
+.watch-screen {
+  min-height: 100dvh;
+  padding: 18px 24px 32px;
+}
+
+.watch-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 36px;
+}
+
+.wordmark,
+.change-video {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.wordmark {
+  padding: 6px 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.change-video {
+  padding: 6px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.wordmark:hover,
+.change-video:hover {
+  color: var(--text);
+}
+
+.watch-stage {
+  display: flex;
+  width: min(1120px, calc(100vw - 48px));
+  min-height: calc(100dvh - 104px);
+  margin: 8px auto 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.player-frame {
+  position: relative;
+  width: min(100%, calc((100dvh - 210px) * 16 / 9));
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: #000000;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.26);
+}
+
+.player-frame video,
+.player-frame iframe,
+.youtube-host,
+.youtube-host iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.player-frame video {
+  object-fit: contain;
+  background: #000000;
+}
+
+.reaction-layer {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.floating-reaction {
+  position: absolute;
+  bottom: 12%;
+  display: block;
+  font-size: clamp(34px, 5vw, 62px);
+  line-height: 1;
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.34));
+  animation: reaction-rise 2.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  transform: translateX(-50%);
+  will-change: transform, opacity;
+}
+
+.floating-reaction[data-source='agent'] {
+  filter: drop-shadow(0 0 14px rgba(255, 255, 255, 0.26))
+    drop-shadow(0 8px 18px rgba(0, 0, 0, 0.34));
+}
+
+.reaction-picker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 18px;
+}
+
+.reaction-button {
+  display: grid;
+  width: 46px;
+  height: 42px;
+  place-items: center;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 23px;
+  transition: background 150ms ease, transform 150ms ease;
+}
+
+.reaction-button:hover,
+.reaction-button:focus-visible {
+  outline: 0;
+  background: var(--surface-hover);
+  transform: translateY(-2px);
+}
+
+.player-note {
+  min-height: 18px;
+  margin: 10px 0 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-align: center;
+}
+
+.player-note[data-playback-status='playing'] {
+  color: var(--text-secondary);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes reaction-rise {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 16px) scale(0.72);
+  }
+
+  18% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+
+  70% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -150px) scale(1.08) rotate(4deg);
+  }
+}
+
+@media (max-width: 680px) {
+  .start-screen {
+    padding: 24px;
+  }
+
+  .start-content {
+    transform: none;
+  }
+
+  .link-form {
+    margin-top: 36px;
+  }
+
+  .watch-screen {
+    padding: 14px 14px 24px;
+  }
+
+  .watch-stage {
+    width: 100%;
+    min-height: calc(100dvh - 88px);
+    margin-top: 0;
+  }
+
+  .player-frame {
+    width: 100%;
+    border-radius: 8px;
+  }
+
+  .reaction-picker {
+    margin-top: 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
