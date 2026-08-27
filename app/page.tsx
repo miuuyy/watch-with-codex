@@ -10,14 +10,15 @@ import {
 } from 'react';
 
 const REACTION_EMOJIS = ['😂', '😮', '❤️', '😬', '👀'] as const;
-const OBSERVATION_INTERVAL_MS = 5_000;
+const OBSERVATION_INTERVALS_SECONDS = [5, 10, 15] as const;
+const DEFAULT_OBSERVATION_INTERVAL_SECONDS = 5;
 
 const WATCH_PROTOCOL = {
   role: 'Share the open video with the user as a natural viewing companion.',
   userIntent:
     'The user decides what kind of company they want. Follow their current request; watching together does not require a fixed amount of commentary or reactions.',
   observation:
-    'When the user asks you to actively watch, inspect the visible video and call watch_observe_next_moment repeatedly. Each successful call waits about five seconds. Stop when playback pauses or ends.',
+    'When the user asks you to actively watch, call watch_observe_next_moment repeatedly. Each call returns when the configured observation interval elapses or immediately when the user sends a live signal. Stop when playback pauses or ends.',
   behavior: [
     'Stay quiet by default.',
     'Do not comment on every observation.',
@@ -59,10 +60,37 @@ type PlayerController = {
 };
 
 type ReactionEmoji = (typeof REACTION_EMOJIS)[number];
+type DisplayEmoji = ReactionEmoji | '❓';
+type ObservationIntervalSeconds = (typeof OBSERVATION_INTERVALS_SECONDS)[number];
+
+type UserSignal =
+  | {
+      id: string;
+      kind: 'reaction';
+      emoji: ReactionEmoji;
+      createdAt: string;
+      playbackTime: number | null;
+    }
+  | {
+      id: string;
+      kind: 'question';
+      createdAt: string;
+      playbackTime: number | null;
+    };
+
+type ObservationWake =
+  | { reason: 'interval' }
+  | { reason: 'user_signal'; signal: UserSignal }
+  | { reason: 'cancelled' };
+
+type ObservationWaiter = {
+  timerId: number;
+  resolve: (wake: ObservationWake) => void;
+};
 
 type ReactionEvent = {
   id: string;
-  emoji: ReactionEmoji;
+  emoji: DisplayEmoji;
   source: 'user' | 'agent';
   playbackTime: number | null;
   left: number;
@@ -459,19 +487,29 @@ export default function Home() {
   const [error, setError] = useState('');
   const [reactions, setReactions] = useState<ReactionEvent[]>([]);
   const [playback, setPlayback] = useState<PlaybackSnapshot>(EMPTY_PLAYBACK);
+  const [observationIntervalSeconds, setObservationIntervalSeconds] =
+    useState<ObservationIntervalSeconds>(DEFAULT_OBSERVATION_INTERVAL_SECONDS);
   const playbackRef = useRef(playback);
+  const observationIntervalRef = useRef(observationIntervalSeconds);
   const controllerRef = useRef<PlayerController | null>(null);
   const reactionSequenceRef = useRef(0);
+  const signalSequenceRef = useRef(0);
+  const pendingSignalsRef = useRef<UserSignal[]>([]);
+  const observationWaiterRef = useRef<ObservationWaiter | null>(null);
 
   useEffect(() => {
     playbackRef.current = playback;
   }, [playback]);
 
+  useEffect(() => {
+    observationIntervalRef.current = observationIntervalSeconds;
+  }, [observationIntervalSeconds]);
+
   const updatePlayback = useCallback((next: Partial<PlaybackSnapshot>) => {
     setPlayback((current) => ({ ...current, ...next }));
   }, []);
 
-  const publishReaction = useCallback((emoji: ReactionEmoji, eventSource: 'user' | 'agent') => {
+  const publishVisualReaction = useCallback((emoji: DisplayEmoji, eventSource: 'user' | 'agent') => {
     const sequence = reactionSequenceRef.current++;
     const event: ReactionEvent = {
       id: `${Date.now()}-${sequence}`,
@@ -487,6 +525,71 @@ export default function Home() {
     }, 2_200);
 
     return event;
+  }, []);
+
+  const releaseObservation = useCallback((wake: ObservationWake) => {
+    const waiter = observationWaiterRef.current;
+    if (!waiter) {
+      return false;
+    }
+
+    window.clearTimeout(waiter.timerId);
+    observationWaiterRef.current = null;
+    waiter.resolve(wake);
+    return true;
+  }, []);
+
+  const publishUserSignal = useCallback(
+    (input: { kind: 'reaction'; emoji: ReactionEmoji } | { kind: 'question' }) => {
+      const common = {
+        id: `signal-${Date.now()}-${signalSequenceRef.current++}`,
+        createdAt: new Date().toISOString(),
+        playbackTime: finiteTime(playbackRef.current.currentTime ?? Number.NaN),
+      };
+      const signal: UserSignal =
+        input.kind === 'reaction'
+          ? { ...common, kind: 'reaction', emoji: input.emoji }
+          : { ...common, kind: 'question' };
+
+      if (!releaseObservation({ reason: 'user_signal', signal })) {
+        pendingSignalsRef.current = [...pendingSignalsRef.current.slice(-19), signal];
+      }
+    },
+    [releaseObservation],
+  );
+
+  const publishUserReaction = useCallback(
+    (emoji: ReactionEmoji) => {
+      publishVisualReaction(emoji, 'user');
+      publishUserSignal({ kind: 'reaction', emoji });
+    },
+    [publishUserSignal, publishVisualReaction],
+  );
+
+  const publishUserQuestion = useCallback(() => {
+    publishVisualReaction('❓', 'user');
+    publishUserSignal({ kind: 'question' });
+  }, [publishUserSignal, publishVisualReaction]);
+
+  const waitForObservationWake = useCallback((timeoutMs: number) => {
+    const queuedSignal = pendingSignalsRef.current.shift();
+    if (queuedSignal) {
+      return Promise.resolve<ObservationWake>({
+        reason: 'user_signal',
+        signal: queuedSignal,
+      });
+    }
+
+    return new Promise<ObservationWake>((resolve) => {
+      const timerId = window.setTimeout(() => {
+        if (observationWaiterRef.current?.timerId === timerId) {
+          observationWaiterRef.current = null;
+        }
+        resolve({ reason: 'interval' });
+      }, timeoutMs);
+
+      observationWaiterRef.current = { timerId, resolve };
+    });
   }, []);
 
   useEffect(() => {
@@ -512,13 +615,18 @@ export default function Home() {
         execute: async () => ({
           ok: true,
           playback: publicPlaybackState(playbackRef.current),
-          protocol: WATCH_PROTOCOL,
+          protocol: {
+            ...WATCH_PROTOCOL,
+            observationIntervalSeconds: observationIntervalRef.current,
+            liveSignals:
+              'A user reaction or question wakes watch_observe_next_moment immediately. Treat the returned signal and visible frame as evidence; choose the response from the current conversation context.',
+          },
         }),
       },
       {
         name: 'watch_observe_next_moment',
         description:
-          'Continue an active watch-along by waiting about five seconds, then anchor your visual inspection to the updated playback time. Call repeatedly only while the video is playing and the user wants you to watch. Inspect the visible frame, but stay quiet unless the moment merits a reaction or the user requested commentary. Stop when this tool reports that playback paused or ended.',
+          'Continue an active watch-along. Wait until the user-selected observation interval elapses, or return immediately when the user sends a reaction or question signal. Call repeatedly only while the video is playing and the user wants you to watch. Inspect the visible frame and use any returned signal as evidence; the current conversation determines how you respond.',
         inputSchema: noInputSchema,
         annotations: { readOnlyHint: true },
         execute: async () => {
@@ -541,9 +649,26 @@ export default function Home() {
             );
           }
 
+          if (observationWaiterRef.current) {
+            return webMcpError(
+              'OBSERVATION_ALREADY_PENDING',
+              'Another observation call is already waiting for the next moment.',
+              initial,
+            );
+          }
+
           const observedSource = initial.sourceUrl;
-          await wait(OBSERVATION_INTERVAL_MS);
+          const intervalSeconds = observationIntervalRef.current;
+          const wake = await waitForObservationWake(intervalSeconds * 1_000);
           const current = playbackRef.current;
+
+          if (wake.reason === 'cancelled') {
+            return webMcpError(
+              'OBSERVATION_CANCELLED',
+              'The watch page stopped the pending observation.',
+              current,
+            );
+          }
 
           if (current.sourceUrl !== observedSource) {
             return webMcpError(
@@ -565,9 +690,12 @@ export default function Home() {
             observation: {
               id: `observation-${Date.now()}`,
               capturedAt: new Date().toISOString(),
+              wakeReason: wake.reason,
+              signal: wake.reason === 'user_signal' ? wake.signal : null,
+              observationIntervalSeconds: intervalSeconds,
               playback: publicPlaybackState(current),
               visualInstruction:
-                'Inspect the currently visible video frame before deciding whether to stay quiet, react, or respond to the user.',
+                'Inspect the currently visible video frame. Use the wake reason, optional user signal, and conversation context to decide whether to stay quiet, react, or respond.',
             },
           };
         },
@@ -652,7 +780,7 @@ export default function Home() {
             );
           }
 
-          const reaction = publishReaction(emoji as ReactionEmoji, 'agent');
+          const reaction = publishVisualReaction(emoji as ReactionEmoji, 'agent');
           return {
             ok: true,
             reaction: {
@@ -676,6 +804,7 @@ export default function Home() {
       });
 
     return () => {
+      releaseObservation({ reason: 'cancelled' });
       if (modelContext.unregisterTool) {
         for (const tool of tools) {
           void modelContext.unregisterTool(tool.name);
@@ -683,7 +812,7 @@ export default function Home() {
       }
       delete document.documentElement.dataset.siteTools;
     };
-  }, [publishReaction]);
+  }, [publishVisualReaction, releaseObservation, waitForObservationWake]);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -692,6 +821,7 @@ export default function Home() {
       setSource(parsedSource);
       setError('');
       setReactions([]);
+      pendingSignalsRef.current = [];
       setPlayback({
         sourceUrl: parsedSource.url,
         sourceKind: parsedSource.kind,
@@ -707,6 +837,8 @@ export default function Home() {
 
   function reset() {
     controllerRef.current = null;
+    pendingSignalsRef.current = [];
+    releaseObservation({ reason: 'cancelled' });
     setSource(null);
     setPlayback(EMPTY_PLAYBACK);
     setReactions([]);
@@ -785,18 +917,46 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="reaction-picker" aria-label="React to this moment">
-          {REACTION_EMOJIS.map((emoji) => (
+        <div className="watch-controls">
+          <div className="reaction-picker" aria-label="React to this moment">
+            {REACTION_EMOJIS.map((emoji) => (
+              <button
+                type="button"
+                key={emoji}
+                className="reaction-button"
+                aria-label={`React with ${emoji}`}
+                onClick={() => publishUserReaction(emoji)}
+              >
+                {emoji}
+              </button>
+            ))}
+            <span className="control-divider" aria-hidden="true" />
             <button
               type="button"
-              key={emoji}
-              className="reaction-button"
-              aria-label={`React with ${emoji}`}
-              onClick={() => publishReaction(emoji, 'user')}
+              className="reaction-button question-button"
+              aria-label="Ask GPT about this moment"
+              title="Ask GPT about this moment"
+              onClick={publishUserQuestion}
             >
-              {emoji}
+              ❓
             </button>
-          ))}
+          </div>
+
+          <div className="observation-picker" aria-label="GPT observation interval">
+            <span>Check every</span>
+            {OBSERVATION_INTERVALS_SECONDS.map((seconds) => (
+              <button
+                type="button"
+                key={seconds}
+                className="interval-button"
+                data-active={seconds === observationIntervalSeconds}
+                aria-pressed={seconds === observationIntervalSeconds}
+                onClick={() => setObservationIntervalSeconds(seconds)}
+              >
+                {seconds}s
+              </button>
+            ))}
+          </div>
         </div>
 
         {source.kind === 'embed' ? (

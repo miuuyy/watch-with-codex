@@ -246,12 +246,22 @@ h1 {
     drop-shadow(0 8px 18px rgba(0, 0, 0, 0.34));
 }
 
-.reaction-picker {
+.watch-controls,
+.reaction-picker,
+.observation-picker {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+}
+
+.watch-controls {
+  flex-wrap: wrap;
+  gap: 12px 20px;
   margin-top: 18px;
+}
+
+.reaction-picker {
+  gap: 6px;
 }
 
 .reaction-button {
@@ -272,6 +282,48 @@ h1 {
   outline: 0;
   background: var(--surface-hover);
   transform: translateY(-2px);
+}
+
+.control-divider {
+  width: 1px;
+  height: 22px;
+  margin: 0 2px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.question-button {
+  color: var(--text);
+}
+
+.observation-picker {
+  gap: 4px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.observation-picker > span {
+  margin-right: 3px;
+}
+
+.interval-button {
+  min-width: 34px;
+  height: 28px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font: inherit;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.interval-button:hover,
+.interval-button:focus-visible,
+.interval-button[data-active='true'] {
+  outline: 0;
+  background: var(--surface-hover);
+  color: var(--text);
 }
 
 .player-note {
