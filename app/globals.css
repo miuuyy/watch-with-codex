@@ -284,17 +284,6 @@ h1 {
   transform: translateY(-2px);
 }
 
-.control-divider {
-  width: 1px;
-  height: 22px;
-  margin: 0 2px;
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.question-button {
-  color: var(--text);
-}
-
 .observation-picker {
   gap: 4px;
   color: var(--text-tertiary);

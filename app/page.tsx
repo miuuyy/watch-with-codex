@@ -9,7 +9,7 @@ import {
   useState,
 } from 'react';
 
-const REACTION_EMOJIS = ['😂', '😮', '❤️', '😬', '👀'] as const;
+const REACTION_EMOJIS = ['😂', '❓', '💀', '😭', '❤️'] as const;
 const OBSERVATION_INTERVALS_SECONDS = [5, 10, 15] as const;
 const DEFAULT_OBSERVATION_INTERVAL_SECONDS = 5;
 
@@ -60,23 +60,15 @@ type PlayerController = {
 };
 
 type ReactionEmoji = (typeof REACTION_EMOJIS)[number];
-type DisplayEmoji = ReactionEmoji | '❓';
 type ObservationIntervalSeconds = (typeof OBSERVATION_INTERVALS_SECONDS)[number];
 
-type UserSignal =
-  | {
-      id: string;
-      kind: 'reaction';
-      emoji: ReactionEmoji;
-      createdAt: string;
-      playbackTime: number | null;
-    }
-  | {
-      id: string;
-      kind: 'question';
-      createdAt: string;
-      playbackTime: number | null;
-    };
+type UserSignal = {
+  id: string;
+  kind: 'emoji';
+  emoji: ReactionEmoji;
+  createdAt: string;
+  playbackTime: number | null;
+};
 
 type ObservationWake =
   | { reason: 'interval' }
@@ -90,7 +82,7 @@ type ObservationWaiter = {
 
 type ReactionEvent = {
   id: string;
-  emoji: DisplayEmoji;
+  emoji: ReactionEmoji;
   source: 'user' | 'agent';
   playbackTime: number | null;
   left: number;
@@ -509,7 +501,7 @@ export default function Home() {
     setPlayback((current) => ({ ...current, ...next }));
   }, []);
 
-  const publishVisualReaction = useCallback((emoji: DisplayEmoji, eventSource: 'user' | 'agent') => {
+  const publishVisualReaction = useCallback((emoji: ReactionEmoji, eventSource: 'user' | 'agent') => {
     const sequence = reactionSequenceRef.current++;
     const event: ReactionEvent = {
       id: `${Date.now()}-${sequence}`,
@@ -540,16 +532,14 @@ export default function Home() {
   }, []);
 
   const publishUserSignal = useCallback(
-    (input: { kind: 'reaction'; emoji: ReactionEmoji } | { kind: 'question' }) => {
-      const common = {
+    (emoji: ReactionEmoji) => {
+      const signal: UserSignal = {
         id: `signal-${Date.now()}-${signalSequenceRef.current++}`,
+        kind: 'emoji',
+        emoji,
         createdAt: new Date().toISOString(),
         playbackTime: finiteTime(playbackRef.current.currentTime ?? Number.NaN),
       };
-      const signal: UserSignal =
-        input.kind === 'reaction'
-          ? { ...common, kind: 'reaction', emoji: input.emoji }
-          : { ...common, kind: 'question' };
 
       if (!releaseObservation({ reason: 'user_signal', signal })) {
         pendingSignalsRef.current = [...pendingSignalsRef.current.slice(-19), signal];
@@ -561,15 +551,10 @@ export default function Home() {
   const publishUserReaction = useCallback(
     (emoji: ReactionEmoji) => {
       publishVisualReaction(emoji, 'user');
-      publishUserSignal({ kind: 'reaction', emoji });
+      publishUserSignal(emoji);
     },
     [publishUserSignal, publishVisualReaction],
   );
-
-  const publishUserQuestion = useCallback(() => {
-    publishVisualReaction('❓', 'user');
-    publishUserSignal({ kind: 'question' });
-  }, [publishUserSignal, publishVisualReaction]);
 
   const waitForObservationWake = useCallback((timeoutMs: number) => {
     const queuedSignal = pendingSignalsRef.current.shift();
@@ -619,14 +604,14 @@ export default function Home() {
             ...WATCH_PROTOCOL,
             observationIntervalSeconds: observationIntervalRef.current,
             liveSignals:
-              'A user reaction or question wakes watch_observe_next_moment immediately. Treat the returned signal and visible frame as evidence; choose the response from the current conversation context.',
+              'Any viewer emoji wakes watch_observe_next_moment immediately. Treat the returned emoji and visible frame as evidence; choose the response from the current conversation context.',
           },
         }),
       },
       {
         name: 'watch_observe_next_moment',
         description:
-          'Continue an active watch-along. Wait until the user-selected observation interval elapses, or return immediately when the user sends a reaction or question signal. Call repeatedly only while the video is playing and the user wants you to watch. Inspect the visible frame and use any returned signal as evidence; the current conversation determines how you respond.',
+          'Continue an active watch-along. Wait until the user-selected observation interval elapses, or return immediately when the viewer sends any emoji signal. Call repeatedly only while the video is playing and the user wants you to watch. Inspect the visible frame and use any returned emoji as evidence; the current conversation determines how you respond.',
         inputSchema: noInputSchema,
         annotations: { readOnlyHint: true },
         execute: async () => {
@@ -930,16 +915,6 @@ export default function Home() {
                 {emoji}
               </button>
             ))}
-            <span className="control-divider" aria-hidden="true" />
-            <button
-              type="button"
-              className="reaction-button question-button"
-              aria-label="Ask GPT about this moment"
-              title="Ask GPT about this moment"
-              onClick={publishUserQuestion}
-            >
-              ❓
-            </button>
           </div>
 
           <div className="observation-picker" aria-label="GPT observation interval">
