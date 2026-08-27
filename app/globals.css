@@ -260,6 +260,10 @@ h1 {
   margin-top: 18px;
 }
 
+.reaction-picker-shell {
+  position: relative;
+}
+
 .reaction-picker {
   gap: 6px;
 }
@@ -282,6 +286,79 @@ h1 {
   outline: 0;
   background: var(--surface-hover);
   transform: translateY(-2px);
+}
+
+.reaction-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.32;
+  transform: none;
+}
+
+.more-reactions-button {
+  color: var(--text-secondary);
+  font-size: 22px;
+  letter-spacing: 0.08em;
+}
+
+.more-reactions-button[aria-expanded='true'] {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.reaction-popover {
+  position: absolute;
+  z-index: 5;
+  bottom: calc(100% + 12px);
+  left: 50%;
+  width: min(316px, calc(100vw - 28px));
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(33, 33, 33, 0.98);
+  box-shadow: 0 18px 56px rgba(0, 0, 0, 0.44);
+  transform: translateX(-50%);
+}
+
+.reaction-popover-header {
+  display: flex;
+  min-height: 28px;
+  padding: 0 4px 7px 8px;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.reaction-popover-close {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.reaction-popover-close:hover,
+.reaction-popover-close:focus-visible {
+  outline: 0;
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.reaction-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.reaction-grid .reaction-button {
+  width: 100%;
 }
 
 .observation-picker {
@@ -390,6 +467,11 @@ h1 {
 
   .reaction-picker {
     margin-top: 14px;
+    gap: 4px;
+  }
+
+  .reaction-picker .reaction-button {
+    width: 42px;
   }
 }
 

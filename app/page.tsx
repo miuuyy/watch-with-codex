@@ -9,9 +9,29 @@ import {
   useState,
 } from 'react';
 
-const REACTION_EMOJIS = ['😂', '❓', '💀', '😭', '❤️'] as const;
+const PRIMARY_REACTION_EMOJIS = ['😂', '❓', '💀', '😭', '❤️'] as const;
+const REACTION_EMOJIS = [
+  ...PRIMARY_REACTION_EMOJIS,
+  '🤣',
+  '😮',
+  '😱',
+  '😍',
+  '🥹',
+  '👀',
+  '🤔',
+  '😡',
+  '🤯',
+  '👏',
+  '🔥',
+  '👍',
+  '👎',
+  '🎉',
+  '😬',
+] as const;
 const OBSERVATION_INTERVALS_SECONDS = [5, 10, 15] as const;
 const DEFAULT_OBSERVATION_INTERVAL_SECONDS = 5;
+const VIEWER_REACTION_COOLDOWN_MS = 3_000;
+const MAX_AGENT_REACTIONS = 5;
 
 const WATCH_PROTOCOL = {
   role: 'Share the open video with the user as a natural viewing companion.',
@@ -68,6 +88,7 @@ type UserSignal = {
   emoji: ReactionEmoji;
   createdAt: string;
   playbackTime: number | null;
+  timecode: string | null;
 };
 
 type ObservationWake =
@@ -84,7 +105,9 @@ type ReactionEvent = {
   id: string;
   emoji: ReactionEmoji;
   source: 'user' | 'agent';
+  createdAt: string;
   playbackTime: number | null;
+  timecode: string | null;
   left: number;
 };
 
@@ -155,11 +178,30 @@ function finiteTime(value: number) {
   return Number.isFinite(value) && value >= 0 ? Math.round(value * 10) / 10 : null;
 }
 
+function formatTimecode(value: number | null) {
+  if (value === null || !Number.isFinite(value) || value < 0) return null;
+
+  const totalTenths = Math.round(value * 10);
+  const tenths = totalTenths % 10;
+  const totalSeconds = Math.floor(totalTenths / 10);
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minutes = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${tenths}`;
+}
+
 function publicPlaybackState(snapshot: PlaybackSnapshot) {
+  const currentTime = snapshot.currentTime === null ? null : finiteTime(snapshot.currentTime);
+  const duration = snapshot.duration === null ? null : finiteTime(snapshot.duration);
+
   return {
     ...snapshot,
-    currentTime: snapshot.currentTime === null ? null : finiteTime(snapshot.currentTime),
-    duration: snapshot.duration === null ? null : finiteTime(snapshot.duration),
+    currentTime,
+    timecode: formatTimecode(currentTime),
+    duration,
+    durationTimecode: formatTimecode(duration),
   };
 }
 
@@ -478,6 +520,8 @@ export default function Home() {
   const [source, setSource] = useState<VideoSource | null>(null);
   const [error, setError] = useState('');
   const [reactions, setReactions] = useState<ReactionEvent[]>([]);
+  const [reactionMenuOpen, setReactionMenuOpen] = useState(false);
+  const [viewerReactionCoolingDown, setViewerReactionCoolingDown] = useState(false);
   const [playback, setPlayback] = useState<PlaybackSnapshot>(EMPTY_PLAYBACK);
   const [observationIntervalSeconds, setObservationIntervalSeconds] =
     useState<ObservationIntervalSeconds>(DEFAULT_OBSERVATION_INTERVAL_SECONDS);
@@ -488,6 +532,9 @@ export default function Home() {
   const signalSequenceRef = useRef(0);
   const pendingSignalsRef = useRef<UserSignal[]>([]);
   const observationWaiterRef = useRef<ObservationWaiter | null>(null);
+  const reactionMenuRef = useRef<HTMLDivElement>(null);
+  const lastViewerReactionAtRef = useRef(0);
+  const viewerReactionCooldownTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     playbackRef.current = playback;
@@ -497,27 +544,70 @@ export default function Home() {
     observationIntervalRef.current = observationIntervalSeconds;
   }, [observationIntervalSeconds]);
 
+  useEffect(() => {
+    if (!reactionMenuOpen) return;
+
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      if (
+        reactionMenuRef.current &&
+        event.target instanceof Node &&
+        !reactionMenuRef.current.contains(event.target)
+      ) {
+        setReactionMenuOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setReactionMenuOpen(false);
+    };
+
+    document.addEventListener('pointerdown', closeOnOutsidePress);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePress);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [reactionMenuOpen]);
+
+  useEffect(
+    () => () => {
+      if (viewerReactionCooldownTimerRef.current !== null) {
+        window.clearTimeout(viewerReactionCooldownTimerRef.current);
+      }
+    },
+    [],
+  );
+
   const updatePlayback = useCallback((next: Partial<PlaybackSnapshot>) => {
     setPlayback((current) => ({ ...current, ...next }));
   }, []);
 
-  const publishVisualReaction = useCallback((emoji: ReactionEmoji, eventSource: 'user' | 'agent') => {
-    const sequence = reactionSequenceRef.current++;
-    const event: ReactionEvent = {
-      id: `${Date.now()}-${sequence}`,
-      emoji,
-      source: eventSource,
-      playbackTime: playbackRef.current.currentTime,
-      left: 28 + ((sequence * 17) % 45),
-    };
+  const publishVisualReactions = useCallback(
+    (emojis: readonly ReactionEmoji[], eventSource: 'user' | 'agent') => {
+      const createdAt = new Date().toISOString();
+      const playbackTime = finiteTime(playbackRef.current.currentTime ?? Number.NaN);
+      const events = emojis.map((emoji) => {
+        const sequence = reactionSequenceRef.current++;
+        return {
+          id: `${Date.now()}-${sequence}`,
+          emoji,
+          source: eventSource,
+          createdAt,
+          playbackTime,
+          timecode: formatTimecode(playbackTime),
+          left: 28 + ((sequence * 17) % 45),
+        } satisfies ReactionEvent;
+      });
+      const eventIds = new Set(events.map((event) => event.id));
 
-    setReactions((current) => [...current, event]);
-    window.setTimeout(() => {
-      setReactions((current) => current.filter((reaction) => reaction.id !== event.id));
-    }, 2_200);
+      setReactions((current) => [...current, ...events]);
+      window.setTimeout(() => {
+        setReactions((current) => current.filter((reaction) => !eventIds.has(reaction.id)));
+      }, 2_200);
 
-    return event;
-  }, []);
+      return events;
+    },
+    [],
+  );
 
   const releaseObservation = useCallback((wake: ObservationWake) => {
     const waiter = observationWaiterRef.current;
@@ -533,12 +623,14 @@ export default function Home() {
 
   const publishUserSignal = useCallback(
     (emoji: ReactionEmoji) => {
+      const playbackTime = finiteTime(playbackRef.current.currentTime ?? Number.NaN);
       const signal: UserSignal = {
         id: `signal-${Date.now()}-${signalSequenceRef.current++}`,
         kind: 'emoji',
         emoji,
         createdAt: new Date().toISOString(),
-        playbackTime: finiteTime(playbackRef.current.currentTime ?? Number.NaN),
+        playbackTime,
+        timecode: formatTimecode(playbackTime),
       };
 
       if (!releaseObservation({ reason: 'user_signal', signal })) {
@@ -550,10 +642,23 @@ export default function Home() {
 
   const publishUserReaction = useCallback(
     (emoji: ReactionEmoji) => {
-      publishVisualReaction(emoji, 'user');
+      const now = Date.now();
+      if (now - lastViewerReactionAtRef.current < VIEWER_REACTION_COOLDOWN_MS) return;
+
+      lastViewerReactionAtRef.current = now;
+      setViewerReactionCoolingDown(true);
+      if (viewerReactionCooldownTimerRef.current !== null) {
+        window.clearTimeout(viewerReactionCooldownTimerRef.current);
+      }
+      viewerReactionCooldownTimerRef.current = window.setTimeout(() => {
+        setViewerReactionCoolingDown(false);
+        viewerReactionCooldownTimerRef.current = null;
+      }, VIEWER_REACTION_COOLDOWN_MS);
+
+      publishVisualReactions([emoji], 'user');
       publishUserSignal(emoji);
     },
-    [publishUserSignal, publishVisualReaction],
+    [publishUserSignal, publishVisualReactions],
   );
 
   const waitForObservationWake = useCallback((timeoutMs: number) => {
@@ -603,6 +708,8 @@ export default function Home() {
           protocol: {
             ...WATCH_PROTOCOL,
             observationIntervalSeconds: observationIntervalRef.current,
+            viewerReactionCooldownSeconds: VIEWER_REACTION_COOLDOWN_MS / 1_000,
+            maxAgentReactionsPerCall: MAX_AGENT_REACTIONS,
             liveSignals:
               'Any viewer emoji wakes watch_observe_next_moment immediately. Treat the returned emoji and visible frame as evidence; choose the response from the current conversation context.',
           },
@@ -740,41 +847,53 @@ export default function Home() {
       {
         name: 'watch_react',
         description:
-          'Publish one lightweight visual reaction at the current playback moment. Use only when it genuinely fits or the user requests it; do not react to every observation. The user’s requested viewing style has priority. This visibly changes the page.',
+          'Publish between one and five lightweight visual reactions together at the current playback moment. Use a small burst only when it genuinely fits or the user requests it; do not react to every observation. The user’s requested viewing style has priority. This visibly changes the page.',
         inputSchema: {
           type: 'object',
           properties: {
-            emoji: {
-              type: 'string',
-              enum: REACTION_EMOJIS,
-              description: 'The reaction to show over the video.',
+            emojis: {
+              type: 'array',
+              items: {
+                type: 'string',
+                enum: REACTION_EMOJIS,
+              },
+              minItems: 1,
+              maxItems: MAX_AGENT_REACTIONS,
+              description: 'One to five reactions to show together over the video.',
             },
           },
-          required: ['emoji'],
+          required: ['emojis'],
           additionalProperties: false,
         },
         execute: async (input) => {
-          const emoji =
-            typeof input === 'object' && input !== null && 'emoji' in input
-              ? (input as { emoji?: unknown }).emoji
+          const emojis =
+            typeof input === 'object' && input !== null && 'emojis' in input
+              ? (input as { emojis?: unknown }).emojis
               : undefined;
 
-          if (!REACTION_EMOJIS.includes(emoji as ReactionEmoji)) {
+          if (
+            !Array.isArray(emojis) ||
+            emojis.length < 1 ||
+            emojis.length > MAX_AGENT_REACTIONS ||
+            !emojis.every((emoji) => REACTION_EMOJIS.includes(emoji as ReactionEmoji))
+          ) {
             return webMcpError(
               'INVALID_REACTION',
-              'Choose one of the five reactions declared by this tool.',
+              `Choose between one and ${MAX_AGENT_REACTIONS} reactions declared by this tool.`,
               playbackRef.current,
             );
           }
 
-          const reaction = publishVisualReaction(emoji as ReactionEmoji, 'agent');
+          const reactionEvents = publishVisualReactions(emojis as ReactionEmoji[], 'agent');
           return {
             ok: true,
-            reaction: {
+            reactions: reactionEvents.map((reaction) => ({
               emoji: reaction.emoji,
-              playbackTime: finiteTime(reaction.playbackTime ?? Number.NaN),
+              createdAt: reaction.createdAt,
+              playbackTime: reaction.playbackTime,
+              timecode: reaction.timecode,
               source: reaction.source,
-            },
+            })),
             playback: publicPlaybackState(playbackRef.current),
           };
         },
@@ -799,7 +918,7 @@ export default function Home() {
       }
       delete document.documentElement.dataset.siteTools;
     };
-  }, [publishVisualReaction, releaseObservation, waitForObservationWake]);
+  }, [publishVisualReactions, releaseObservation, waitForObservationWake]);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -808,6 +927,7 @@ export default function Home() {
       setSource(parsedSource);
       setError('');
       setReactions([]);
+      setReactionMenuOpen(false);
       pendingSignalsRef.current = [];
       setPlayback({
         sourceUrl: parsedSource.url,
@@ -829,6 +949,7 @@ export default function Home() {
     setSource(null);
     setPlayback(EMPTY_PLAYBACK);
     setReactions([]);
+    setReactionMenuOpen(false);
     setError('');
   }
 
@@ -905,18 +1026,69 @@ export default function Home() {
         </div>
 
         <div className="watch-controls">
-          <div className="reaction-picker" aria-label="React to this moment">
-            {REACTION_EMOJIS.map((emoji) => (
+          <div className="reaction-picker-shell" ref={reactionMenuRef}>
+            <div className="reaction-picker" aria-label="React to this moment">
+              {PRIMARY_REACTION_EMOJIS.map((emoji) => (
+                <button
+                  type="button"
+                  key={emoji}
+                  className="reaction-button"
+                  aria-label={`React with ${emoji}`}
+                  disabled={viewerReactionCoolingDown}
+                  onClick={() => publishUserReaction(emoji)}
+                >
+                  {emoji}
+                </button>
+              ))}
               <button
                 type="button"
-                key={emoji}
-                className="reaction-button"
-                aria-label={`React with ${emoji}`}
-                onClick={() => publishUserReaction(emoji)}
+                className="reaction-button more-reactions-button"
+                aria-label={reactionMenuOpen ? 'Close more reactions' : 'Show more reactions'}
+                aria-expanded={reactionMenuOpen}
+                aria-controls="more-reactions"
+                onClick={() => setReactionMenuOpen((open) => !open)}
               >
-                {emoji}
+                <span aria-hidden="true">…</span>
               </button>
-            ))}
+            </div>
+
+            {reactionMenuOpen ? (
+              <div
+                className="reaction-popover"
+                id="more-reactions"
+                role="dialog"
+                aria-label="More reactions"
+              >
+                <div className="reaction-popover-header">
+                  <span>Reactions</span>
+                  <button
+                    type="button"
+                    className="reaction-popover-close"
+                    aria-label="Close reactions"
+                    onClick={() => setReactionMenuOpen(false)}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="reaction-grid">
+                  {REACTION_EMOJIS.map((emoji) => (
+                    <button
+                      type="button"
+                      key={emoji}
+                      className="reaction-button"
+                      aria-label={`React with ${emoji}`}
+                      disabled={viewerReactionCoolingDown}
+                      onClick={() => publishUserReaction(emoji)}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            <span className="sr-only" aria-live="polite">
+              {viewerReactionCoolingDown ? 'You can react again in three seconds.' : ''}
+            </span>
           </div>
 
           <div className="observation-picker" aria-label="GPT observation interval">
