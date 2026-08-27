@@ -114,6 +114,20 @@ type ObservationWaiter = {
   resolve: (wake: ObservationWake) => void;
 };
 
+type ObservationCursor = {
+  sourceUrl: string;
+  intervalSeconds: ObservationIntervalSeconds;
+  previousPlaybackTime: number;
+  nextCheckpointTime: number;
+  discontinuitySequence: number;
+};
+
+type PlaybackSample = {
+  mediaTime: number;
+  sampledAt: number;
+  sourceUrl: string | null;
+};
+
 type ReactionEvent = {
   id: string;
   emoji: ReactionEmoji;
@@ -589,11 +603,11 @@ export default function Home() {
   const [reactions, setReactions] = useState<ReactionEvent[]>([]);
   const [reactionMenuOpen, setReactionMenuOpen] = useState(false);
   const [viewerReactionCoolingDown, setViewerReactionCoolingDown] = useState(false);
-  const [playback, setPlayback] = useState<PlaybackSnapshot>(EMPTY_PLAYBACK);
+  const [playbackStatus, setPlaybackStatus] = useState<PlaybackStatus>('idle');
   const [mediaMetadata, setMediaMetadata] = useState<MediaMetadata | null>(null);
   const [observationIntervalSeconds, setObservationIntervalSeconds] =
     useState<ObservationIntervalSeconds>(DEFAULT_OBSERVATION_INTERVAL_SECONDS);
-  const playbackRef = useRef(playback);
+  const playbackRef = useRef<PlaybackSnapshot>(EMPTY_PLAYBACK);
   const mediaMetadataRef = useRef(mediaMetadata);
   const observationIntervalRef = useRef(observationIntervalSeconds);
   const controllerRef = useRef<PlayerController | null>(null);
@@ -602,13 +616,12 @@ export default function Home() {
   const mediaSessionSequenceRef = useRef(0);
   const pendingSignalsRef = useRef<UserSignal[]>([]);
   const observationWaiterRef = useRef<ObservationWaiter | null>(null);
+  const observationCursorRef = useRef<ObservationCursor | null>(null);
+  const playbackSampleRef = useRef<PlaybackSample | null>(null);
+  const playbackDiscontinuitySequenceRef = useRef(0);
   const reactionMenuRef = useRef<HTMLDivElement>(null);
   const lastViewerReactionAtRef = useRef(0);
   const viewerReactionCooldownTimerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    playbackRef.current = playback;
-  }, [playback]);
 
   useEffect(() => {
     mediaMetadataRef.current = mediaMetadata;
@@ -655,7 +668,7 @@ export default function Home() {
       .catch(() => {
         if (disposed) return;
         setMediaMetadata((current) =>
-          current?.sessionId === sessionId
+          current && current.sessionId === sessionId
             ? { ...current, status: 'unavailable' }
             : current,
         );
@@ -700,7 +713,37 @@ export default function Home() {
   );
 
   const updatePlayback = useCallback((next: Partial<PlaybackSnapshot>) => {
-    setPlayback((current) => ({ ...current, ...next }));
+    const previous = playbackRef.current;
+    const current = { ...previous, ...next };
+    const sampledAt = performance.now();
+
+    if (current.currentTime !== null) {
+      const previousSample = playbackSampleRef.current;
+      if (
+        previousSample &&
+        previousSample.sourceUrl === current.sourceUrl &&
+        previous.status === 'playing' &&
+        current.status === 'playing'
+      ) {
+        const wallDeltaSeconds = Math.max(0, (sampledAt - previousSample.sampledAt) / 1_000);
+        const mediaDeltaSeconds = current.currentTime - previousSample.mediaTime;
+        const largestExpectedAdvance = Math.max(2, wallDeltaSeconds * 4 + 1);
+        if (mediaDeltaSeconds < -1 || mediaDeltaSeconds > largestExpectedAdvance) {
+          playbackDiscontinuitySequenceRef.current += 1;
+        }
+      }
+
+      playbackSampleRef.current = {
+        mediaTime: current.currentTime,
+        sampledAt,
+        sourceUrl: current.sourceUrl,
+      };
+    }
+
+    playbackRef.current = current;
+    if (current.status !== previous.status) {
+      setPlaybackStatus(current.status);
+    }
   }, []);
 
   const publishVisualReactions = useCallback(
@@ -784,7 +827,7 @@ export default function Home() {
   );
 
   const waitForObservationWake = useCallback(
-    (startPlaybackTime: number, intervalSeconds: number) => {
+    (startPlaybackTime: number, targetPlaybackTime: number) => {
       const queuedSignal = pendingSignalsRef.current.shift();
       if (queuedSignal) {
         return Promise.resolve<ObservationWake>({
@@ -793,8 +836,17 @@ export default function Home() {
         });
       }
 
+      const initial = playbackRef.current;
+      if (
+        initial.status !== 'playing' ||
+        initial.currentTime === null ||
+        initial.currentTime < startPlaybackTime - 1 ||
+        initial.currentTime >= targetPlaybackTime
+      ) {
+        return Promise.resolve<ObservationWake>({ reason: 'interval' });
+      }
+
       return new Promise<ObservationWake>((resolve) => {
-        const targetPlaybackTime = startPlaybackTime + intervalSeconds;
         const checkPlaybackTime = () => {
           const waiter = observationWaiterRef.current;
           if (!waiter) return;
@@ -856,13 +908,17 @@ export default function Home() {
               'watch_get_session returns session-level media identity once. Observations repeat only mediaSessionId and sourceId alongside timing fields.',
             liveSignals:
               'Any viewer emoji wakes watch_observe_next_moment immediately. Treat the returned emoji and visible frame as evidence; choose the response from the current conversation context.',
+            visualCapture:
+              'The page supplies the checkpoint through WebMCP. Immediately after each successful observation and before model reasoning, the browser agent should capture the rendered .player-frame, including the video, captions, and player overlays.',
+            frameBatching:
+              'If the browser agent has already captured multiple checkpoint frames before reasoning resumes, present them in chronological order as one horizontal strip labeled Frame 1, Frame 2, and so on, with each timecode.',
           },
         }),
       },
       {
         name: 'watch_observe_next_moment',
         description:
-          'Continue an active watch-along. Wait until the selected amount of video playback time elapses, or return immediately when the viewer sends any emoji signal. Call repeatedly only while the video is playing and the user wants you to watch. Inspect the visible frame and use any returned emoji as evidence; the current conversation determines how you respond.',
+          'Continue an active watch-along on a persistent media-time cursor. Return at the next scheduled checkpoint or immediately for any viewer emoji. After success, capture the rendered .player-frame through browser page observation before model reasoning, then use the frame, signal, and conversation to decide whether to stay quiet, react, or respond.',
         inputSchema: noInputSchema,
         annotations: { readOnlyHint: true },
         execute: async () => {
@@ -895,8 +951,28 @@ export default function Home() {
 
           const observedSource = initial.sourceUrl;
           const intervalSeconds = observationIntervalRef.current;
-          const initialPlaybackTime = finiteTime(initial.currentTime);
-          const wake = await waitForObservationWake(initial.currentTime, intervalSeconds);
+          const discontinuitySequence = playbackDiscontinuitySequenceRef.current;
+          const storedCursor = observationCursorRef.current;
+          const canReuseCursor =
+            storedCursor?.sourceUrl === observedSource &&
+            storedCursor.intervalSeconds === intervalSeconds &&
+            storedCursor.discontinuitySequence === discontinuitySequence &&
+            initial.currentTime >= storedCursor.previousPlaybackTime - 1;
+          const cursor: ObservationCursor = canReuseCursor
+            ? storedCursor
+            : {
+                sourceUrl: observedSource,
+                intervalSeconds,
+                previousPlaybackTime: initial.currentTime,
+                nextCheckpointTime: initial.currentTime + intervalSeconds,
+                discontinuitySequence,
+              };
+          observationCursorRef.current = cursor;
+
+          const wake = await waitForObservationWake(
+            initial.currentTime,
+            cursor.nextCheckpointTime,
+          );
           const current = playbackRef.current;
 
           if (wake.reason === 'cancelled') {
@@ -923,14 +999,38 @@ export default function Home() {
           }
 
           const currentPlaybackTime = finiteTime(current.currentTime ?? Number.NaN);
-          const elapsedPlaybackSeconds =
-            initialPlaybackTime === null || currentPlaybackTime === null
-              ? null
-              : finiteDelta(currentPlaybackTime - initialPlaybackTime);
+          if (currentPlaybackTime === null) {
+            return webMcpError(
+              'PLAYER_STATE_UNAVAILABLE',
+              'The player stopped exposing playback timing during observation.',
+              current,
+            );
+          }
+
+          const currentDiscontinuitySequence = playbackDiscontinuitySequenceRef.current;
           const seekDetected =
-            wake.reason === 'interval' &&
-            elapsedPlaybackSeconds !== null &&
-            (elapsedPlaybackSeconds < -1 || elapsedPlaybackSeconds > intervalSeconds + 2);
+            currentDiscontinuitySequence !== cursor.discontinuitySequence ||
+            currentPlaybackTime < cursor.previousPlaybackTime - 1;
+          const elapsedPlaybackSeconds =
+            finiteDelta(currentPlaybackTime - cursor.previousPlaybackTime);
+          const crossedCheckpointCount =
+            seekDetected || currentPlaybackTime < cursor.nextCheckpointTime
+              ? 0
+              : Math.floor(
+                  (currentPlaybackTime - cursor.nextCheckpointTime) / intervalSeconds,
+                ) + 1;
+          const nextCheckpointTime = seekDetected
+            ? currentPlaybackTime + intervalSeconds
+            : cursor.nextCheckpointTime + crossedCheckpointCount * intervalSeconds;
+
+          observationCursorRef.current = {
+            sourceUrl: observedSource,
+            intervalSeconds,
+            previousPlaybackTime: currentPlaybackTime,
+            nextCheckpointTime,
+            discontinuitySequence: currentDiscontinuitySequence,
+          };
+
           const observationId = `observation-${Date.now()}`;
           const capturedAt = new Date().toISOString();
 
@@ -943,15 +1043,27 @@ export default function Home() {
               signal: wake.reason === 'user_signal' ? wake.signal : null,
               observationIntervalSeconds: intervalSeconds,
               observationIntervalBasis: 'video playback time',
-              previousPlaybackTime: initialPlaybackTime,
-              previousTimecode: formatTimecode(initialPlaybackTime),
+              previousPlaybackTime: cursor.previousPlaybackTime,
+              previousTimecode: formatTimecode(cursor.previousPlaybackTime),
               elapsedPlaybackSeconds,
               seekDetected,
+              cursor: {
+                crossedCheckpointCount,
+                missedCheckpointCount: Math.max(0, crossedCheckpointCount - 1),
+                nextCheckpointPlaybackTime: finiteTime(nextCheckpointTime),
+                nextCheckpointTimecode: formatTimecode(nextCheckpointTime),
+              },
               mediaSessionId: mediaMetadataRef.current?.sessionId ?? null,
               sourceId: mediaMetadataRef.current?.sourceId ?? null,
               playback: publicPlaybackState(current),
+              visualCapture: {
+                source: 'browser page observation',
+                targetSelector: '.player-frame',
+                includes: ['video', 'captions', 'player overlays'],
+                requiredBeforeReasoning: true,
+              },
               visualInstruction:
-                'Inspect the currently visible video frame. Use the wake reason, optional user signal, and conversation context to decide whether to stay quiet, react, or respond.',
+                'Capture the rendered player immediately before reasoning. Then use that frame, the wake reason, optional user signal, and conversation context to decide whether to stay quiet, react, or respond.',
               continuationInstruction:
                 'If you intend to keep watching after handling this checkpoint, call watch_observe_next_moment again immediately. Do not call it again if playback has stopped or the user no longer wants you to watch.',
             },
@@ -1094,6 +1206,18 @@ export default function Home() {
       const parsedSource = parseVideoSource(videoUrl);
       const sessionId = `media-${Date.now()}-${mediaSessionSequenceRef.current++}`;
       const nextMetadata = initialMediaMetadata(parsedSource, sessionId);
+      const nextPlayback: PlaybackSnapshot = {
+        sourceUrl: parsedSource.url,
+        sourceKind: parsedSource.kind,
+        status: parsedSource.kind === 'embed' ? 'unavailable' : 'loading',
+        currentTime: null,
+        duration: null,
+        controllable: false,
+      };
+      playbackRef.current = nextPlayback;
+      playbackSampleRef.current = null;
+      playbackDiscontinuitySequenceRef.current = 0;
+      observationCursorRef.current = null;
       setSource(parsedSource);
       setMediaMetadata(nextMetadata);
       mediaMetadataRef.current = nextMetadata;
@@ -1101,14 +1225,7 @@ export default function Home() {
       setReactions([]);
       setReactionMenuOpen(false);
       pendingSignalsRef.current = [];
-      setPlayback({
-        sourceUrl: parsedSource.url,
-        sourceKind: parsedSource.kind,
-        status: parsedSource.kind === 'embed' ? 'unavailable' : 'loading',
-        currentTime: null,
-        duration: null,
-        controllable: false,
-      });
+      setPlaybackStatus(nextPlayback.status);
     } catch (submissionError) {
       setError(submissionError instanceof Error ? submissionError.message : 'Unable to open this link.');
     }
@@ -1121,7 +1238,11 @@ export default function Home() {
     setSource(null);
     setMediaMetadata(null);
     mediaMetadataRef.current = null;
-    setPlayback(EMPTY_PLAYBACK);
+    playbackRef.current = EMPTY_PLAYBACK;
+    playbackSampleRef.current = null;
+    playbackDiscontinuitySequenceRef.current = 0;
+    observationCursorRef.current = null;
+    setPlaybackStatus('idle');
     setReactions([]);
     setReactionMenuOpen(false);
     setError('');
@@ -1287,8 +1408,8 @@ export default function Home() {
             This player is shown as provided. Shared timing and playback controls may be unavailable.
           </p>
         ) : (
-          <p className="player-note" data-playback-status={playback.status}>
-            {playback.status === 'playing' ? 'Playing together' : 'Ready when you are'}
+          <p className="player-note" data-playback-status={playbackStatus}>
+            {playbackStatus === 'playing' ? 'Playing together' : 'Ready when you are'}
           </p>
         )}
       </section>
