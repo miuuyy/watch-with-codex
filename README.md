@@ -1,5 +1,15 @@
 # Watch with Codex
 
+> [!WARNING]
+> **Hackathon prototype.** This repository was built specifically for the OpenAI WebMCP Challenge. It is an intentionally scoped experiment—not a production product and not a representative sample of the scale or maturity of my other projects.
+
+[![Hackathon: OpenAI WebMCP Challenge](https://img.shields.io/badge/hackathon-OpenAI_WebMCP_Challenge-10a37f?style=flat-square)](https://webmcp.devpost.com/)
+![Status: prototype](https://img.shields.io/badge/status-prototype-f5a524?style=flat-square)
+![WebMCP site tools](https://img.shields.io/badge/WebMCP-site_tools-6f42c1?style=flat-square)
+![Next.js](https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=next.js)
+![OpenAI Sites](https://img.shields.io/badge/hosting-OpenAI_Sites-000000?style=flat-square)
+[![License: MIT](https://img.shields.io/badge/license-MIT-0b78c4?style=flat-square)](LICENSE)
+
 Watch videos with Codex as a live companion in the same browser and the same conversation.
 
 ![Codex watching the GPT-5 presentation and reacting to the current frame](assets/watch-with-codex-gpt5.png)
