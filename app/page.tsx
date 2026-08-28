@@ -38,10 +38,12 @@ const WATCH_PROTOCOL = {
   userIntent:
     'The user decides what kind of company they want. Follow their current request; watching together does not require a fixed amount of commentary or reactions.',
   observation:
-    'When the user asks you to actively watch, call watch_observe_next_moment repeatedly. Each call returns when the configured observation interval elapses or immediately when the user sends a live signal. Stop when playback pauses or ends.',
+    'When the user asks you to actively watch, call watch_observe_next_moment repeatedly in the same turn. Each call returns when the configured observation interval elapses or immediately when the user sends a live signal. A live signal interrupts the wait, not the watch-along: handle it and immediately continue observing while playback is active. Stop only when the user asks you to stop watching or playback pauses, ends, or becomes unavailable.',
   behavior: [
     'Stay quiet by default.',
     'Do not comment on every observation.',
+    'Every viewer emoji is intentional input. Acknowledge it in context with a brief comment, answer, or reaction; do not end the watch-along after acknowledging it.',
+    'Do not pause playback solely because the viewer sent an emoji.',
     'Prefer a lightweight reaction when that communicates enough.',
     'Keep comments and reactions tied to the current playback moment.',
     'Do not infer or reveal events beyond the current playback position.',
@@ -911,7 +913,7 @@ export default function Home() {
             mediaMetadata:
               'watch_get_session returns session-level media identity once. Observations repeat only mediaSessionId and sourceId alongside timing fields.',
             liveSignals:
-              'Any viewer emoji wakes watch_observe_next_moment immediately. Treat the returned emoji and visible frame as evidence; choose the response from the current conversation context.',
+              'Any viewer emoji wakes watch_observe_next_moment immediately. It is intentional input inside the active watch-along, never an implicit request to pause or stop. Acknowledge it from the returned emoji, visible frame, and conversation context, then continue observing in the same turn while playback remains active.',
             visualCapture:
               'The page supplies the checkpoint through WebMCP. Immediately after each successful observation and before model reasoning, the browser agent should capture the rendered .player-frame, including the video, captions, and player overlays.',
           },
@@ -920,7 +922,7 @@ export default function Home() {
       {
         name: 'watch_observe_next_moment',
         description:
-          'Continue an active watch-along on a persistent media-time cursor. Return at the next scheduled checkpoint or immediately for any viewer emoji. After success, capture the rendered .player-frame through browser page observation before model reasoning, then use the frame, signal, and conversation to decide whether to stay quiet, react, or respond.',
+          'Continue an active watch-along on a persistent media-time cursor. Return at the next scheduled checkpoint or immediately for any viewer emoji. After success, capture the rendered .player-frame through browser page observation before model reasoning. At scheduled checkpoints, use the frame and conversation to decide whether to stay quiet, react, or comment. For a viewer emoji, always acknowledge the intentional signal in context, do not pause or end the watch-along solely because of it, and call this tool again in the same turn while playback remains active.',
         inputSchema: noInputSchema,
         annotations: { readOnlyHint: true },
         execute: async () => {
@@ -1067,7 +1069,9 @@ export default function Home() {
               visualInstruction:
                 'Capture the rendered player immediately before reasoning. Then use that frame, the wake reason, optional user signal, and conversation context to decide whether to stay quiet, react, or respond.',
               continuationInstruction:
-                'If you intend to keep watching after handling this checkpoint, call watch_observe_next_moment again immediately. Do not call it again if playback has stopped or the user no longer wants you to watch.',
+                wake.reason === 'user_signal'
+                  ? 'This viewer signal is part of the ongoing watch-along, not a stop or pause request. Acknowledge it in context, keep playback running, and call watch_observe_next_moment again immediately in this same turn. Stop only if the user explicitly asks you to stop watching or playback is no longer active.'
+                  : 'If the user still wants active watching and playback remains active, call watch_observe_next_moment again immediately in this same turn. Stop only if the user asks you to stop watching or playback is no longer active.',
             },
           };
         },
