@@ -910,8 +910,6 @@ export default function Home() {
               'Any viewer emoji wakes watch_observe_next_moment immediately. Treat the returned emoji and visible frame as evidence; choose the response from the current conversation context.',
             visualCapture:
               'The page supplies the checkpoint through WebMCP. Immediately after each successful observation and before model reasoning, the browser agent should capture the rendered .player-frame, including the video, captions, and player overlays.',
-            frameBatching:
-              'If the browser agent has already captured multiple checkpoint frames before reasoning resumes, present them in chronological order as one horizontal strip labeled Frame 1, Frame 2, and so on, with each timecode.',
           },
         }),
       },
