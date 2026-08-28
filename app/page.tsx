@@ -307,6 +307,10 @@ function parseVideoSource(value: string): VideoSource {
     throw new Error('Only http and https video links are supported.');
   }
 
+  if (url.origin === window.location.origin) {
+    throw new Error('Paste a video URL, not the Watch with GPT site URL.');
+  }
+
   const hostname = url.hostname.toLowerCase();
   const isYouTube =
     hostname === 'youtu.be' ||
