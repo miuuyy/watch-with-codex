@@ -40,8 +40,8 @@ The application has no database and no independent chat backend. Session state l
 3. A new media session ID and compact metadata record are created.
 4. The appropriate player surface reports normalized playback state.
 5. The page registers the five WebMCP tools against `navigator.modelContext`.
-6. Codex calls `watch_get_session` once and starts `watch_observe_next_moment` while playback is active.
-7. Scheduled checkpoints and viewer reactions repeatedly wake the observer.
+6. Codex calls `watch_get_session` once, then starts each `watch_observe_next_moment` inside a programmatic browser call that also captures `.player-frame`.
+7. Scheduled checkpoints and viewer reactions repeatedly wake the observer; the same browser program captures the frame in its next operation and returns the checkpoint and image together before Codex reasons.
 8. Changing the video clears the cursor, queued signals, metadata, and reactions before a new session begins.
 
 ## Player abstraction
@@ -84,7 +84,7 @@ The signal contract has four invariants:
 1. every emoji is intentional input and must be acknowledged in context;
 2. an emoji is never an implicit pause or stop request;
 3. handling the signal does not end the watch loop;
-4. while playback remains active, Codex calls the observer again in the same turn.
+4. while playback remains active, Codex repeats the paired observe-and-capture browser program in the same turn.
 
 Viewer input is rate-limited to one reaction every three seconds. This prevents repeated clicks from flooding the signal queue without adding a semantic fallback.
 
@@ -92,17 +92,24 @@ Viewer input is rate-limited to one reaction every three seconds. This prevents 
 
 The page cannot reliably serialize the pixels of a cross-origin YouTube iframe into a WebMCP JSON response. It therefore does not claim to send image bytes through the tool.
 
-Instead, each successful observation returns a visual-capture contract:
+Instead, each successful observation participates in a paired visual-capture contract:
 
 - capture source: browser page observation;
 - target: `.player-frame`;
 - included surfaces: video, captions, and player overlays;
-- timing: immediately after the observer resolves and before model reasoning.
+- orchestration: preselect the target, await the observer, then capture in the same programmatic browser call;
+- timing: the capture is the next browser operation after resolution, with zero intervening model turns;
+- result: the structured observation and image are returned to Codex together.
 
 This produces a clear boundary:
 
 ```text
-WebMCP checkpoint -> immediate browser capture -> model reasoning -> optional action -> next observer call
+one browser program {
+  await WebMCP checkpoint
+  -> immediate .player-frame capture
+  -> return checkpoint + image together
+}
+-> model reasoning -> optional action -> next paired operation
 ```
 
 The checkpoint anchors the frame to the reaction or scheduled media time. Browser capture provides the rendered pixels the viewer actually sees, including cross-origin content.

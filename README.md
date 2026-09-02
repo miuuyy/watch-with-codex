@@ -50,7 +50,7 @@ The page registers five site tools:
 
 `watch_observe_next_moment` is both a clock and an event channel. It follows video playback time rather than wall-clock time, preserves a cursor between calls, detects seeks, and reports missed checkpoints when model reasoning takes longer than the selected cadence.
 
-The tool result provides the exact checkpoint and names `.player-frame` as the visual target. The browser agent then captures the rendered player immediately before reasoning. This boundary matters: WebMCP provides structured page state, while browser observation supplies the pixels of cross-origin players such as YouTube.
+Every observation is one programmatic browser operation, not two model turns. The browser program preselects `.player-frame`, awaits `watch_observe_next_moment`, captures the rendered player in its next operation, and returns the structured checkpoint and image to the model together. No model reasoning occurs between observer resolution and capture. This boundary matters: WebMCP provides structured page state, while browser observation supplies the pixels of cross-origin players such as YouTube.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete data flow and design decisions.
 

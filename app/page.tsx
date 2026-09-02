@@ -38,7 +38,7 @@ const WATCH_PROTOCOL = {
   userIntent:
     'The user decides what kind of company they want. Follow their current request; watching together does not require a fixed amount of commentary or reactions.',
   observation:
-    'When the user asks you to actively watch, call watch_observe_next_moment repeatedly in the same turn. Each call returns when the configured observation interval elapses or immediately when the user sends a live signal. A live signal interrupts the wait, not the watch-along: handle it and immediately continue observing while playback is active. Stop only when the user asks you to stop watching or playback pauses, ends, or becomes unavailable.',
+    'When the user asks you to actively watch, run every observation as one programmatic browser call: preselect the rendered .player-frame, await watch_observe_next_moment, capture that frame in the very next browser operation, and return the structured observation and image to the model together. Never yield to model reasoning between the WebMCP result and frame capture, and never invoke the observer as a standalone call during active watching. Repeat this paired operation in the same turn. Each observer resolves when the configured observation interval elapses or immediately when the user sends a live signal. A live signal interrupts the wait, not the watch-along: handle it and immediately continue observing while playback is active. Stop only when the user asks you to stop watching or playback pauses, ends, or becomes unavailable.',
   behavior: [
     'Stay quiet by default.',
     'Do not comment on every observation.',
@@ -915,14 +915,14 @@ export default function Home() {
             liveSignals:
               'Any viewer emoji wakes watch_observe_next_moment immediately. It is intentional input inside the active watch-along, never an implicit request to pause or stop. Acknowledge it from the returned emoji, visible frame, and conversation context, then continue observing in the same turn while playback remains active.',
             visualCapture:
-              'The page supplies the checkpoint through WebMCP. Immediately after each successful observation and before model reasoning, the browser agent should capture the rendered .player-frame, including the video, captions, and player overlays.',
+              'Use one programmatic browser call for the complete operation: preselect .player-frame, await watch_observe_next_moment, capture the rendered frame in the very next browser operation, and return the observation and image together. Do not invoke the observer as a standalone call and do not yield to model reasoning between the WebMCP result and capture. The frame includes the video, captions, and player overlays.',
           },
         }),
       },
       {
         name: 'watch_observe_next_moment',
         description:
-          'Continue an active watch-along on a persistent media-time cursor. Return at the next scheduled checkpoint or immediately for any viewer emoji. After success, capture the rendered .player-frame through browser page observation before model reasoning. At scheduled checkpoints, use the frame and conversation to decide whether to stay quiet, react, or comment. For a viewer emoji, always acknowledge the intentional signal in context, do not pause or end the watch-along solely because of it, and call this tool again in the same turn while playback remains active.',
+          'Continue an active watch-along on a persistent media-time cursor. IMPORTANT: during active watching, never invoke this observer as a standalone call. Use one programmatic browser call that preselects the rendered .player-frame, awaits this WebMCP tool, captures that frame in the very next browser operation, and returns the structured observation and image to the model together. There must be zero model-reasoning turns between observer resolution and frame capture. The observer returns at the next scheduled checkpoint or immediately for any viewer emoji. At scheduled checkpoints, use the paired frame and conversation to decide whether to stay quiet, react, or comment. For a viewer emoji, always acknowledge the intentional signal in context, do not pause or end the watch-along solely because of it, and repeat the same paired observe-and-capture operation while playback remains active.',
         inputSchema: noInputSchema,
         annotations: { readOnlyHint: true },
         execute: async () => {
@@ -1065,13 +1065,21 @@ export default function Home() {
                 targetSelector: '.player-frame',
                 includes: ['video', 'captions', 'player overlays'],
                 requiredBeforeReasoning: true,
+                orchestration: 'same programmatic browser call',
+                returnWithObservation: true,
+                interveningModelTurns: 0,
+                sequence: [
+                  'await watch_observe_next_moment',
+                  'capture .player-frame in the next browser operation',
+                  'return the structured observation and image together',
+                ],
               },
               visualInstruction:
-                'Capture the rendered player immediately before reasoning. Then use that frame, the wake reason, optional user signal, and conversation context to decide whether to stay quiet, react, or respond.',
+                'This observation is incomplete without its paired frame. The same browser program that awaited this result must capture the rendered .player-frame in its very next operation and return the structured observation and image together. Do not yield to model reasoning between this result and the capture. Only then use the frame, wake reason, optional user signal, and conversation context to decide whether to stay quiet, react, or respond.',
               continuationInstruction:
                 wake.reason === 'user_signal'
-                  ? 'This viewer signal is part of the ongoing watch-along, not a stop or pause request. Acknowledge it in context, keep playback running, and call watch_observe_next_moment again immediately in this same turn. Stop only if the user explicitly asks you to stop watching or playback is no longer active.'
-                  : 'If the user still wants active watching and playback remains active, call watch_observe_next_moment again immediately in this same turn. Stop only if the user asks you to stop watching or playback is no longer active.',
+                  ? 'This viewer signal is part of the ongoing watch-along, not a stop or pause request. After the paired frame is captured, acknowledge the signal in context, keep playback running, and immediately repeat the same one-program observe-and-capture operation in this turn. Stop only if the user explicitly asks you to stop watching or playback is no longer active.'
+                  : 'If the user still wants active watching and playback remains active, immediately repeat the same one-program observe-and-capture operation in this turn. Stop only if the user asks you to stop watching or playback is no longer active.',
             },
           };
         },
