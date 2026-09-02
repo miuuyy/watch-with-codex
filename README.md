@@ -13,9 +13,9 @@
 Watch videos with Codex as a live companion in the same browser and the same conversation.
 
 ![Codex watching the GPT-5 presentation and reacting to the current frame](assets/watch-with-codex-gpt5.png)
-![Codex explaining the context of a historical moment while the video continues](assets/watch-with-codex-history.png)
+![How the five-second WebMCP observation loop works](assets/webmcp-architecture.png)
 
-[Live demo](https://watch-with-gpt.feodijnikita.chatgpt.site/) · [Architecture](ARCHITECTURE.md)
+[Live demo](https://watch-with-gpt.vechenkovh.chatgpt.site/) · [Architecture](ARCHITECTURE.md)
 
 ## What it is
 
