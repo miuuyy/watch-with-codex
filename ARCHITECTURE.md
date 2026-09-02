@@ -77,7 +77,7 @@ A seek resets the schedule at the new playback position instead of pretending al
 
 ### Viewer signal
 
-Reaction controls are enabled only while an observation is actively pending. Clicking an enabled emoji creates a structured signal with its creation time, playback time, and timecode, then resolves that observation immediately. Signals are never queued for later delivery.
+Clicking an emoji creates a structured signal with its creation time, playback time, and timecode. If an observation is pending, the signal resolves it immediately. Otherwise it is placed in a bounded queue for the next call.
 
 The signal contract has four invariants:
 
@@ -86,7 +86,7 @@ The signal contract has four invariants:
 3. handling the signal does not end the watch loop;
 4. while playback remains active, Codex calls the observer again in the same turn.
 
-Viewer input is rate-limited to one reaction every three seconds. This prevents repeated clicks from flooding the active observation without adding a semantic fallback.
+Viewer input is rate-limited to one reaction every three seconds. This prevents repeated clicks from flooding the signal queue without adding a semantic fallback.
 
 ## Frame capture boundary
 

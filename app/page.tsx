@@ -610,7 +610,6 @@ export default function Home() {
   const [reactionMenuOpen, setReactionMenuOpen] = useState(false);
   const [viewerReactionCoolingDown, setViewerReactionCoolingDown] = useState(false);
   const [playbackStatus, setPlaybackStatus] = useState<PlaybackStatus>('idle');
-  const [observerActive, setObserverActive] = useState(false);
   const [mediaMetadata, setMediaMetadata] = useState<MediaMetadata | null>(null);
   const [observationIntervalSeconds, setObservationIntervalSeconds] =
     useState<ObservationIntervalSeconds>(DEFAULT_OBSERVATION_INTERVAL_SECONDS);
@@ -621,6 +620,7 @@ export default function Home() {
   const reactionSequenceRef = useRef(0);
   const signalSequenceRef = useRef(0);
   const mediaSessionSequenceRef = useRef(0);
+  const pendingSignalsRef = useRef<UserSignal[]>([]);
   const observationWaiterRef = useRef<ObservationWaiter | null>(null);
   const observationCursorRef = useRef<ObservationCursor | null>(null);
   const playbackSampleRef = useRef<PlaybackSample | null>(null);
@@ -788,15 +788,12 @@ export default function Home() {
 
     window.clearTimeout(waiter.timerId);
     observationWaiterRef.current = null;
-    setObserverActive(false);
     waiter.resolve(wake);
     return true;
   }, []);
 
   const publishUserSignal = useCallback(
     (emoji: ReactionEmoji) => {
-      if (!observationWaiterRef.current) return false;
-
       const playbackTime = finiteTime(playbackRef.current.currentTime ?? Number.NaN);
       const signal: UserSignal = {
         id: `signal-${Date.now()}-${signalSequenceRef.current++}`,
@@ -807,7 +804,9 @@ export default function Home() {
         timecode: formatTimecode(playbackTime),
       };
 
-      return releaseObservation({ reason: 'user_signal', signal });
+      if (!releaseObservation({ reason: 'user_signal', signal })) {
+        pendingSignalsRef.current = [...pendingSignalsRef.current.slice(-19), signal];
+      }
     },
     [releaseObservation],
   );
@@ -816,7 +815,6 @@ export default function Home() {
     (emoji: ReactionEmoji) => {
       const now = Date.now();
       if (now - lastViewerReactionAtRef.current < VIEWER_REACTION_COOLDOWN_MS) return;
-      if (!publishUserSignal(emoji)) return;
 
       lastViewerReactionAtRef.current = now;
       setViewerReactionCoolingDown(true);
@@ -829,12 +827,21 @@ export default function Home() {
       }, VIEWER_REACTION_COOLDOWN_MS);
 
       publishVisualReactions([emoji], 'user');
+      publishUserSignal(emoji);
     },
     [publishUserSignal, publishVisualReactions],
   );
 
   const waitForObservationWake = useCallback(
     (startPlaybackTime: number, targetPlaybackTime: number) => {
+      const queuedSignal = pendingSignalsRef.current.shift();
+      if (queuedSignal) {
+        return Promise.resolve<ObservationWake>({
+          reason: 'user_signal',
+          signal: queuedSignal,
+        });
+      }
+
       const initial = playbackRef.current;
       if (
         initial.status !== 'playing' ||
@@ -858,7 +865,6 @@ export default function Home() {
             current.currentTime >= targetPlaybackTime
           ) {
             observationWaiterRef.current = null;
-            setObserverActive(false);
             resolve({ reason: 'interval' });
             return;
           }
@@ -869,7 +875,6 @@ export default function Home() {
 
         const timerId = window.setTimeout(checkPlaybackTime, 100);
         observationWaiterRef.current = { timerId, resolve };
-        setObserverActive(true);
       });
     },
     [],
@@ -899,10 +904,6 @@ export default function Home() {
           ok: true,
           media: mediaMetadataRef.current,
           playback: publicPlaybackState(playbackRef.current),
-          observer: {
-            status: observationWaiterRef.current ? 'watching' : 'inactive',
-            viewerSignalsAvailable: Boolean(observationWaiterRef.current),
-          },
           protocol: {
             ...WATCH_PROTOCOL,
             observationIntervalSeconds: observationIntervalRef.current,
@@ -912,7 +913,7 @@ export default function Home() {
             mediaMetadata:
               'watch_get_session returns session-level media identity once. Observations repeat only mediaSessionId and sourceId alongside timing fields.',
             liveSignals:
-              'Viewer reaction controls are available only while watch_observe_next_moment is actively waiting. Every accepted emoji wakes that pending call immediately; signals are never queued for later delivery. Acknowledge the emoji from the returned signal, visible frame, and conversation context, then continue observing in the same turn while playback remains active.',
+              'Any viewer emoji wakes watch_observe_next_moment immediately. It is intentional input inside the active watch-along, never an implicit request to pause or stop. Acknowledge it from the returned emoji, visible frame, and conversation context, then continue observing in the same turn while playback remains active.',
             visualCapture:
               'The page supplies the checkpoint through WebMCP. Immediately after each successful observation and before model reasoning, the browser agent should capture the rendered .player-frame, including the video, captions, and player overlays.',
           },
@@ -1229,6 +1230,7 @@ export default function Home() {
       setError('');
       setReactions([]);
       setReactionMenuOpen(false);
+      pendingSignalsRef.current = [];
       setPlaybackStatus(nextPlayback.status);
     } catch (submissionError) {
       setError(submissionError instanceof Error ? submissionError.message : 'Unable to open this link.');
@@ -1237,6 +1239,7 @@ export default function Home() {
 
   function reset() {
     controllerRef.current = null;
+    pendingSignalsRef.current = [];
     releaseObservation({ reason: 'cancelled' });
     setSource(null);
     setMediaMetadata(null);
@@ -1332,7 +1335,7 @@ export default function Home() {
                   key={emoji}
                   className="reaction-button"
                   aria-label={`React with ${emoji}`}
-                  disabled={!observerActive || viewerReactionCoolingDown}
+                  disabled={viewerReactionCoolingDown}
                   onClick={() => publishUserReaction(emoji)}
                 >
                   {emoji}
@@ -1375,7 +1378,7 @@ export default function Home() {
                       key={emoji}
                       className="reaction-button"
                       aria-label={`React with ${emoji}`}
-                      disabled={!observerActive || viewerReactionCoolingDown}
+                      disabled={viewerReactionCoolingDown}
                       onClick={() => publishUserReaction(emoji)}
                     >
                       {emoji}
@@ -1385,11 +1388,7 @@ export default function Home() {
               </div>
             ) : null}
             <span className="sr-only" aria-live="polite">
-              {!observerActive
-                ? 'Reactions become available while GPT is watching.'
-                : viewerReactionCoolingDown
-                  ? 'You can react again in three seconds.'
-                  : 'GPT is ready for your reaction.'}
+              {viewerReactionCoolingDown ? 'You can react again in three seconds.' : ''}
             </span>
           </div>
 
@@ -1416,11 +1415,7 @@ export default function Home() {
           </p>
         ) : (
           <p className="player-note" data-playback-status={playbackStatus}>
-            {playbackStatus === 'playing'
-              ? observerActive
-                ? 'GPT is watching'
-                : 'Waiting for GPT'
-              : 'Ready when you are'}
+            {playbackStatus === 'playing' ? 'Playing together' : 'Ready when you are'}
           </p>
         )}
       </section>
